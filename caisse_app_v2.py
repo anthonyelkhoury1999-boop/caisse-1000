@@ -86,7 +86,7 @@ def build_report_html(rows, meta_title: str):
       <div style="height:12px;"></div>
       <table style="width:100%; border-collapse:collapse; font-size:14px; background:#ffffff; color:#000000;" border="1" cellpadding="6" cellspacing="0">
         <thead>
-          <tr style="background:#f3f3f3;">
+          <tr style="background:#f3f3f3; color:#000;">
             <th>Dénomination</th>
             <th>OPEN</th>
             <th>IN</th>
