@@ -1,4 +1,13 @@
 import streamlit as st
+import streamlit as st
+
+def gate():
+    st.title("Accès sécurisé")
+    pwd = st.text_input("Mot de passe", type="password")
+    if pwd != st.secrets["APP_PASSWORD"]:
+        st.stop()
+
+gate()
 
 st.set_page_config(page_title="Caisse 1000$ — Gestion du change", layout="centered")
 
