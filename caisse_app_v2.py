@@ -168,6 +168,58 @@ if st.button("GÉNÉRER LE RAPPORT"):
         else:
             st.success("✅ Total final = 1 000,00 $")
 
-        st.subheader("Rapport imprimable — OPEN / IN / OUT / CLOSE")
-        st.table(rapport(open_counts, in_counts, out_counts, close_counts))
-        st.caption("🖨️ Impression : Ctrl/Cmd + P → Imprimer ou Sauvegarder en PDF")
+       st.subheader("Rapport imprimable — OPEN / IN / OUT / CLOSE")
+
+report_data = rapport(open_counts, in_counts, out_counts, close_counts)
+
+# Convert report to HTML table
+html_rows = ""
+for row in report_data:
+    html_rows += "<tr>" + "".join(f"<td>{v}</td>" for v in row.values()) + "</tr>"
+
+html_table = f"""
+<div id="print-area">
+  <h2>Rapport de caisse</h2>
+  <table border="1" cellspacing="0" cellpadding="6">
+    <thead>
+      <tr>
+        <th>Dénomination</th>
+        <th>OPEN</th>
+        <th>IN</th>
+        <th>OUT</th>
+        <th>CLOSE</th>
+      </tr>
+    </thead>
+    <tbody>
+      {html_rows}
+    </tbody>
+  </table>
+</div>
+
+<style>
+@media print {{
+  body * {{
+    visibility: hidden;
+  }}
+  #print-area, #print-area * {{
+    visibility: visible;
+  }}
+  #print-area {{
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+  }}
+}}
+</style>
+
+<script>
+function printReport() {{
+  window.print();
+}}
+</script>
+"""
+
+st.markdown(html_table, unsafe_allow_html=True)
+
+st.button("🖨️ Imprimer le rapport", on_click=lambda: st.markdown("<script>printReport();</script>", unsafe_allow_html=True))
