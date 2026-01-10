@@ -21,7 +21,7 @@ ORDER = [
     "Pièce 2 $", "Pièce 1 $", "Pièce 0,25 $", "Pièce 0,10 $", "Pièce 0,05 $"
 ]
 
-TARGET = 100000  # 1000$
+TARGET = 100000  # 1000 $
 
 def cents_to_str(c):
     return f"{c/100:.2f} $"
@@ -69,7 +69,7 @@ def rapport(open_c, in_c, out_c, close_c):
     return rows
 
 st.title("Rapport de caisse — 1000 $")
-st.caption(f"Généré le {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+st.caption("Généré le " + datetime.now().strftime("%Y-%m-%d %H:%M"))
 
 st.divider()
 
@@ -82,7 +82,7 @@ for i, k in enumerate(ORDER):
         open_counts[k] = st.number_input(k, min_value=0, step=1, value=0, key=f"o_{k}")
 
 total_open = total_cents(open_counts)
-st.info(f"TOTAL OPEN : {cents_to_str(total_open)}")
+st.info("TOTAL OPEN : " + cents_to_str(total_open))
 
 st.divider()
 
@@ -95,7 +95,7 @@ for i, k in enumerate(ORDER):
         in_counts[k] = st.number_input(f"{k} (IN)", min_value=0, step=1, value=0, key=f"in_{k}")
 
 total_in = total_cents(in_counts)
-st.info(f"TOTAL IN : {cents_to_str(total_in)}")
+st.info("TOTAL IN : " + cents_to_str(total_in))
 
 after_in = add_counts(open_counts, in_counts)
 
@@ -109,7 +109,13 @@ w1, w2 = st.columns(2)
 
 for i, k in enumerate(ORDER):
     with (w1 if i % 2 == 0 else w2):
-        amt = st.number_input(f"{k} — montant $", min_value=0, step=5 if DENOMS[k] >= 500 else 1, value=0, key=f"out_{k}")
+        amt = st.number_input(
+            f"{k} — montant $",
+            min_value=0,
+            step=5 if DENOMS[k] >= 500 else 1,
+            value=0,
+            key=f"out_{k}"
+        )
         cents = int(amt) * 100
         if cents % DENOMS[k] != 0:
             errors.append(f"{k}: montant invalide")
@@ -118,4 +124,32 @@ for i, k in enumerate(ORDER):
             out_counts[k] = cents // DENOMS[k]
 
 total_out = total_cents(out_counts)
-st.info(f"TOTAL
+st.info("TOTAL OUT : " + cents_to_str(total_out))
+
+for k in ORDER:
+    if out_counts[k] > after_in[k]:
+        errors.append(f"{k}: pas assez en caisse")
+
+st.divider()
+
+# CLOSE
+st.header("4) CLOSE — Résultat final")
+
+if st.button("GÉNÉRER LE RAPPORT"):
+    if errors:
+        st.error("Erreurs détectées :")
+        for e in errors:
+            st.write("- " + e)
+    else:
+        close_counts = sub_counts(after_in, out_counts)
+        total_close = total_cents(close_counts)
+
+        st.success("TOTAL CLOSE : " + cents_to_str(total_close))
+
+        if total_close != TARGET:
+            st.warning("⚠️ Le total final n’est pas 1 000 $")
+
+        st.subheader("Rapport OPEN / IN / OUT / CLOSE")
+        st.table(rapport(open_counts, in_counts, out_counts, close_counts))
+
+        st.caption("🖨️ Impression : Ctrl/Cmd + P → Imprimer ou Sauvegarder en PDF")
