@@ -64,7 +64,7 @@ def rapport_rows(open_c: dict, in_c: dict, out_c: dict, close_c: dict):
     return rows
 
 def build_report_html(rows, meta_title: str):
-    # build HTML table rows
+    # Build HTML table rows
     body_rows = ""
     for r in rows:
         body_rows += (
@@ -77,27 +77,13 @@ def build_report_html(rows, meta_title: str):
             "</tr>"
         )
 
-    # Full HTML with a REAL print button (doesn't rerun Streamlit)
-    html = f"""
-    <div id="report">
-      <div style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
-        <div>
-          <h2 style="margin:0;">Rapport de caisse</h2>
-          <div style="opacity:0.75; font-size:12px;">{meta_title}</div>
-        </div>
-        <button onclick="printOnlyReport()" style="
-            padding:10px 14px;
-            border-radius:10px;
-            border:1px solid #ccc;
-            cursor:pointer;
-            font-weight:600;
-          ">
-          🖨️ Imprimer le rapport
-        </button>
+    # Main report HTML (this is what we want to print)
+    report_inner = f"""
+      <div>
+        <h2 style="margin:0;">Rapport de caisse</h2>
+        <div style="opacity:0.75; font-size:12px; margin-top:4px;">{meta_title}</div>
       </div>
-
-      <div style="height:10px;"></div>
-
+      <div style="height:12px;"></div>
       <table style="width:100%; border-collapse:collapse; font-size:14px;" border="1" cellpadding="6" cellspacing="0">
         <thead>
           <tr style="background:#f3f3f3;">
@@ -112,50 +98,77 @@ def build_report_html(rows, meta_title: str):
           {body_rows}
         </tbody>
       </table>
+    """
+
+    # Escape backticks so JS string doesn't break
+    report_inner_js = report_inner.replace("`", "\\`")
+
+    # Full component HTML with a REAL print button (no Streamlit rerun)
+    html = f"""
+    <div id="report-wrapper" style="font-family: Arial, sans-serif;">
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
+        <div>
+          <h3 style="margin:0;">Aperçu du rapport</h3>
+          <div style="opacity:0.7; font-size:12px;">Clique le bouton pour imprimer seulement le tableau.</div>
+        </div>
+        <button id="print-btn" style="
+            padding:10px 14px;
+            border-radius:10px;
+            border:1px solid #ccc;
+            cursor:pointer;
+            font-weight:600;
+            background:white;
+          ">
+          🖨️ Imprimer le rapport
+        </button>
+      </div>
+
+      <div style="height:10px;"></div>
+
+      <div id="report">
+        {report_inner}
+      </div>
     </div>
 
     <script>
       function printOnlyReport() {{
-        // Open a new window that contains ONLY the report HTML
-        var report = document.getElementById('report').innerHTML;
+        var reportHtml = `{report_inner_js}`;
         var w = window.open('', '_blank', 'width=900,height=700');
         w.document.open();
-        w.document.write(`
-          <html>
-            <head>
-              <title>Rapport de caisse</title>
-              <style>
-                body {{ font-family: Arial, sans-serif; padding: 18px; }}
-                table {{ width: 100%; border-collapse: collapse; }}
-                th, td {{ border: 1px solid #000; padding: 6px; }}
-                th {{ background: #f3f3f3; }}
-                button {{ display: none; }}
-              </style>
-            </head>
-            <body>
-              ${report}
-            </body>
-          </html>
-        `);
+        w.document.write('<html><head><title>Rapport de caisse</title>');
+        w.document.write('<style>');
+        w.document.write('body{{font-family:Arial,sans-serif;padding:18px;}}');
+        w.document.write('table{{width:100%;border-collapse:collapse;}}');
+        w.document.write('th,td{{border:1px solid #000;padding:6px;}}');
+        w.document.write('th{{background:#f3f3f3;}}');
+        w.document.write('</style>');
+        w.document.write('</head><body>');
+        w.document.write(reportHtml);
+        w.document.write('</body></html>');
         w.document.close();
         w.focus();
         w.print();
-        // w.close();  // optional: close after printing
+      }}
+
+      const btn = document.getElementById('print-btn');
+      if (btn) {{
+        btn.addEventListener('click', function() {{
+          printOnlyReport();
+        }});
       }}
     </script>
     """
     return html
 
-# ------------- STATE -------------
+# ---------------- STATE ----------------
 if "show_report" not in st.session_state:
     st.session_state.show_report = False
 if "report_payload" not in st.session_state:
     st.session_state.report_payload = None
 
-# ------------- UI -------------
+# ---------------- UI ----------------
 st.title("Caisse 1000 $ — OPEN / IN / OUT / CLOSE")
-
-st.caption("Remplis OPEN → IN → OUT (quantités) → génère le rapport. Le bouton d’impression imprime uniquement le rapport.")
+st.caption("OUT = quantités. Le bouton d’impression imprime uniquement le rapport.")
 
 st.divider()
 
@@ -167,8 +180,7 @@ for i, k in enumerate(ORDER):
     with (c1 if i % 2 == 0 else c2):
         open_counts[k] = st.number_input(k, min_value=0, step=1, value=0, key=f"open_{k}")
 
-total_open = total_cents(open_counts)
-st.info("TOTAL OPEN : " + cents_to_str(total_open))
+st.info("TOTAL OPEN : " + cents_to_str(total_cents(open_counts)))
 
 st.divider()
 
@@ -181,8 +193,7 @@ for i, k in enumerate(ORDER):
         in_counts[k] = st.number_input(f"{k} (IN)", min_value=0, step=1, value=0, key=f"in_{k}")
 
 after_in = add_counts(open_counts, in_counts)
-total_in = total_cents(in_counts)
-st.info("TOTAL IN : " + cents_to_str(total_in))
+st.info("TOTAL IN : " + cents_to_str(total_cents(in_counts)))
 st.success("TOTAL APRÈS IN : " + cents_to_str(total_cents(after_in)))
 
 st.divider()
@@ -196,8 +207,7 @@ for i, k in enumerate(ORDER):
         out_counts[k] = st.number_input(f"{k} — quantité à retirer", min_value=0, step=1, value=0, key=f"out_{k}")
 
 out_counts = {k: int(out_counts.get(k, 0)) for k in DENOMS}
-total_out = total_cents(out_counts)
-st.info("TOTAL OUT : " + cents_to_str(total_out))
+st.info("TOTAL OUT : " + cents_to_str(total_cents(out_counts)))
 
 errors = []
 for k in ORDER:
@@ -208,8 +218,8 @@ st.divider()
 
 # CLOSE + REPORT
 st.header("4) CLOSE — Résultat final")
-
 colA, colB = st.columns([1, 1])
+
 with colA:
     generate = st.button("GÉNÉRER LE RAPPORT")
 with colB:
@@ -230,7 +240,6 @@ if generate:
         close_counts = sub_counts(after_in, out_counts)
         total_close = total_cents(close_counts)
 
-        # store everything needed for the report in state
         rows = rapport_rows(open_counts, in_counts, out_counts, close_counts)
         meta = "Généré le " + datetime.now().strftime("%Y-%m-%d %H:%M")
 
@@ -241,7 +250,6 @@ if generate:
         }
         st.session_state.show_report = True
 
-# Always show close totals if report exists
 if st.session_state.show_report and st.session_state.report_payload:
     total_close = st.session_state.report_payload["total_close"]
     st.success("TOTAL CLOSE : " + cents_to_str(total_close))
@@ -256,4 +264,4 @@ if st.session_state.show_report and st.session_state.report_payload:
         st.session_state.report_payload["rows"],
         st.session_state.report_payload["meta"]
     )
-    components.html(html, height=520, scrolling=True)
+    components.html(html, height=560, scrolling=True)
