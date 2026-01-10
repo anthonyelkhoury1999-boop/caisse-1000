@@ -84,7 +84,7 @@ def build_report_html(rows, meta_title: str):
         <div style="opacity:0.75; font-size:12px; margin-top:4px;">{meta_title}</div>
       </div>
       <div style="height:12px;"></div>
-      <table style="width:100%; border-collapse:collapse; font-size:14px;" border="1" cellpadding="6" cellspacing="0">
+      <table style="width:100%; border-collapse:collapse; font-size:14px; background:#ffffff; color:#000000;" border="1" cellpadding="6" cellspacing="0">
         <thead>
           <tr style="background:#f3f3f3;">
             <th>Dénomination</th>
