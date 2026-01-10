@@ -1,5 +1,4 @@
 import streamlit as st
-import streamlit as st
 
 def gate():
     st.title("Accès sécurisé")
