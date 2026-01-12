@@ -346,7 +346,8 @@ else:
         )
         
        if remaining > 0:
-            st.warning(f"Impossible de couvrir le reste ({cents_to_str(remaining)}) " "avec le contenu actuel de la caisse.")
+               st.warning(f"Impossible de couvrir le reste ({cents_to_str(remaining)}) "
+        "avec le contenu actuel de la caisse.")
            
         if remaining_after == 0:
             st.success("RETRAIT proposé : " + cents_to_str(total_cents(retrait_counts)))
