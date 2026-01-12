@@ -108,7 +108,7 @@ def fill_greedy(target_withdraw_cents: int, allowed: list, available: dict, lock
     if remaining < 0:
         return out, remaining  # retrait trop grand
 
-    allowed_sorted = sorted(allowed, key=lambda x: DENOMS[x], reverse=not prefer_small)
+    allowed_sorted = sorted(allowed, key=lambda x: DENOMS[x])  # SMALL → BIG
 
     for k in allowed_sorted:
         if k in locked:
@@ -344,12 +344,18 @@ else:
             locked=st.session_state.locked_retrait_1000,
             prefer_small=prefer_small
         )
+        if remaining > 0:
+    st.warning(
+        f"Impossible de couvrir le reste ({cents_to_str(remaining)}) "
+        "avec le contenu actuel de la caisse."
+    )
 
         if remaining_after == 0:
             st.success("RETRAIT proposé : " + cents_to_str(total_cents(retrait_counts)))
         else:
-            st.error("Impossible de faire un retrait EXACT avec les types autorisés + la disponibilité.")
-            st.write("Montant restant non couvert : **" + cents_to_str(remaining_after) + "**")
+          # For the 1000$ box, we NEVER block
+          # Remaining will be handled by smaller denominations
+         st.write("Montant restant non couvert : **" + cents_to_str(remaining_after) + "**")
 
         st.subheader("Ajuster le retrait")
         st.caption("Clique ➖/➕ pour ajuster une dénomination, puis l’app recalcule le reste automatiquement.")
