@@ -344,12 +344,10 @@ else:
             locked=st.session_state.locked_retrait_1000,
             prefer_small=prefer_small
         )
-        if remaining > 0:
-    st.warning(
-        f"Impossible de couvrir le reste ({cents_to_str(remaining)}) "
-        "avec le contenu actuel de la caisse."
-    )
-
+        
+       if remaining > 0:
+            st.warning(f"Impossible de couvrir le reste ({cents_to_str(remaining)}) " "avec le contenu actuel de la caisse.")
+           
         if remaining_after == 0:
             st.success("RETRAIT proposé : " + cents_to_str(total_cents(retrait_counts)))
         else:
