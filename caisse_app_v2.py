@@ -18,14 +18,27 @@ if not st.session_state.auth:
     st.stop()
 # --- Fin protection ---
 
-st.set_page_config(page_title="Caisse 1000$ — Rapport", layout="centered")
+st.set_page_config(page_title="Caisse 1000 $ — Boîte de change", layout="centered")
+
+# ------------------ PARAMÈTRES ------------------
+TARGET = 100000  # 1000.00$ en cents
 
 DENOMS = {
+    # Billets
     "Billet 100 $": 10000,
     "Billet 50 $": 5000,
     "Billet 20 $": 2000,
     "Billet 10 $": 1000,
     "Billet 5 $": 500,
+
+    # Rouleaux (Canada)
+    "Rouleau 2 $ (25) — 50 $": 5000,
+    "Rouleau 1 $ (25) — 25 $": 2500,
+    "Rouleau 0,25 $ (40) — 10 $": 1000,
+    "Rouleau 0,10 $ (50) — 5 $": 500,
+    "Rouleau 0,05 $ (40) — 2 $": 200,
+
+    # Pièces (vrac)
     "Pièce 2 $": 200,
     "Pièce 1 $": 100,
     "Pièce 0,25 $": 25,
@@ -34,12 +47,27 @@ DENOMS = {
 }
 
 ORDER = [
-    "Billet 100 $", "Billet 50 $", "Billet 20 $", "Billet 10 $", "Billet 5 $",
-    "Pièce 2 $", "Pièce 1 $", "Pièce 0,25 $", "Pièce 0,10 $", "Pièce 0,05 $"
+    "Billet 100 $",
+    "Billet 50 $",
+    "Billet 20 $",
+    "Billet 10 $",
+    "Billet 5 $",
+
+    "Rouleau 2 $ (25) — 50 $",
+    "Rouleau 1 $ (25) — 25 $",
+    "Rouleau 0,25 $ (40) — 10 $",
+    "Rouleau 0,10 $ (50) — 5 $",
+    "Rouleau 0,05 $ (40) — 2 $",
+
+    "Pièce 2 $",
+    "Pièce 1 $",
+    "Pièce 0,25 $",
+    "Pièce 0,10 $",
+    "Pièce 0,05 $",
 ]
 
-TARGET = 100000  # 1000.00 $
 
+# ------------------ OUTILS ------------------
 def cents_to_str(c: int) -> str:
     return f"{c/100:.2f} $"
 
@@ -52,98 +80,142 @@ def add_counts(a: dict, b: dict) -> dict:
 def sub_counts(a: dict, b: dict) -> dict:
     return {k: int(a.get(k, 0)) - int(b.get(k, 0)) for k in DENOMS}
 
-def rapport_rows(open_c: dict, in_c: dict, out_c: dict, close_c: dict):
+def clamp_locked(locked: dict, max_available: dict) -> dict:
+    out = dict(locked)
+    for k in list(out.keys()):
+        out[k] = int(out[k])
+        if out[k] < 0:
+            out[k] = 0
+        if out[k] > int(max_available.get(k, 0)):
+            out[k] = int(max_available.get(k, 0))
+    return out
+
+def fill_greedy(target_withdraw_cents: int, allowed: list, available: dict, locked: dict, prefer_small: bool):
+    """
+    Calcule un retrait EXACT (si possible).
+    - locked: quantités verrouillées par l'utilisateur
+    - prefer_small=True: propose d'abord les petites valeurs (souvent mieux pour "faire du change")
+      prefer_small=False: propose d'abord les grosses valeurs (moins de pièces/billets)
+    Retour: (out_counts, remaining_cents_after)
+    """
+    out = {k: 0 for k in DENOMS}
+
+    # Appliquer verrouillage
+    for k, q in locked.items():
+        out[k] = int(q)
+
+    remaining = target_withdraw_cents - sum(out[k] * DENOMS[k] for k in DENOMS)
+    if remaining < 0:
+        return out, remaining  # retrait trop grand
+
+    allowed_sorted = sorted(allowed, key=lambda x: DENOMS[x], reverse=not prefer_small)
+
+    for k in allowed_sorted:
+        if k in locked:
+            continue
+        v = DENOMS[k]
+        max_can_take = int(available.get(k, 0)) - int(out.get(k, 0))
+        if max_can_take < 0:
+            max_can_take = 0
+        take = min(remaining // v, max_can_take)
+        out[k] += int(take)
+        remaining -= int(take) * v
+
+    return out, remaining
+
+def rows_report(open_c, depot_c, retrait_c, close_c):
+    """
+    Tableau: Dénomination | OPEN | DÉPÔT | RETRAIT | FERMETURE
+    + ligne TOTAL($)
+    """
     rows = []
-    t_open = t_in = t_out = t_close = 0
+    t_o = t_d = t_r = t_c = 0
 
     for k in ORDER:
         o = int(open_c.get(k, 0))
-        i = int(in_c.get(k, 0))
-        out = int(out_c.get(k, 0))
+        d = int(depot_c.get(k, 0))
+        r = int(retrait_c.get(k, 0))
         c = int(close_c.get(k, 0))
 
-        rows.append({"Dénomination": k, "OPEN": o, "IN": i, "OUT": out, "CLOSE": c})
+        rows.append({
+            "Dénomination": k,
+            "OPEN": o,
+            "DÉPÔT": d,
+            "RETRAIT": r,
+            "FERMETURE": c,
+        })
 
-        t_open += o * DENOMS[k]
-        t_in += i * DENOMS[k]
-        t_out += out * DENOMS[k]
-        t_close += c * DENOMS[k]
+        t_o += o * DENOMS[k]
+        t_d += d * DENOMS[k]
+        t_r += r * DENOMS[k]
+        t_c += c * DENOMS[k]
 
     rows.append({
         "Dénomination": "TOTAL ($)",
-        "OPEN": f"{t_open/100:.2f}",
-        "IN": f"{t_in/100:.2f}",
-        "OUT": f"{t_out/100:.2f}",
-        "CLOSE": f"{t_close/100:.2f}",
+        "OPEN": f"{t_o/100:.2f}",
+        "DÉPÔT": f"{t_d/100:.2f}",
+        "RETRAIT": f"{t_r/100:.2f}",
+        "FERMETURE": f"{t_c/100:.2f}",
     })
-
     return rows
 
-def build_report_html(rows, meta_title: str):
-    # Build HTML table rows
-    body_rows = ""
+def build_print_html(rows, meta_line: str):
+    body = ""
     for r in rows:
-        body_rows += (
+        body += (
             "<tr>"
             f"<td>{r['Dénomination']}</td>"
             f"<td>{r['OPEN']}</td>"
-            f"<td>{r['IN']}</td>"
-            f"<td>{r['OUT']}</td>"
-            f"<td>{r['CLOSE']}</td>"
+            f"<td>{r['DÉPÔT']}</td>"
+            f"<td>{r['RETRAIT']}</td>"
+            f"<td>{r['FERMETURE']}</td>"
             "</tr>"
         )
 
-    # Main report HTML (this is what we want to print)
+    # Force fond blanc + texte noir pour être lisible en dark mode
     report_inner = f"""
       <div>
-        <h2 style="margin:0;">Rapport de caisse</h2>
-        <div style="opacity:0.75; font-size:12px; margin-top:4px;">{meta_title}</div>
+        <h2 style="margin:0;">Rapport — Boîte 1000 $</h2>
+        <div style="opacity:0.75; font-size:12px; margin-top:4px;">{meta_line}</div>
       </div>
       <div style="height:12px;"></div>
-      <table style="width:100%; border-collapse:collapse; font-size:14px; background:#ffffff; color:#000000;" border="1" cellpadding="6" cellspacing="0">
+      <table style="width:100%; border-collapse:collapse; font-size:14px; background:#ffffff; color:#000000;"
+             border="1" cellpadding="6" cellspacing="0">
         <thead>
           <tr style="background:#f3f3f3; color:#000;">
             <th>Dénomination</th>
             <th>OPEN</th>
-            <th>IN</th>
-            <th>OUT</th>
-            <th>CLOSE</th>
+            <th>DÉPÔT</th>
+            <th>RETRAIT</th>
+            <th>FERMETURE</th>
           </tr>
         </thead>
         <tbody>
-          {body_rows}
+          {body}
         </tbody>
       </table>
     """
-
-    # Escape backticks so JS string doesn't break
     report_inner_js = report_inner.replace("`", "\\`")
 
-    # Full component HTML with a REAL print button (no Streamlit rerun)
     html = f"""
-    <div id="report-wrapper" style="font-family: Arial, sans-serif;">
+    <div style="font-family: Arial, sans-serif;">
       <div style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
         <div>
           <h3 style="margin:0;">Aperçu du rapport</h3>
-          <div style="opacity:0.7; font-size:12px;">Clique le bouton pour imprimer seulement le tableau.</div>
+          <div style="opacity:0.7; font-size:12px;">Imprime uniquement le tableau.</div>
         </div>
         <button id="print-btn" style="
-            padding:10px 14px;
-            border-radius:10px;
-            border:1px solid #ccc;
-            cursor:pointer;
-            font-weight:600;
-            background:white;
-          ">
-          🖨️ Imprimer le rapport
-        </button>
+          padding:10px 14px;
+          border-radius:10px;
+          border:1px solid #ccc;
+          cursor:pointer;
+          font-weight:600;
+          background:white;
+        ">🖨️ Imprimer le rapport</button>
       </div>
 
       <div style="height:10px;"></div>
-
-      <div id="report">
-        {report_inner}
-      </div>
+      <div id="report">{report_inner}</div>
     </div>
 
     <script>
@@ -151,9 +223,9 @@ def build_report_html(rows, meta_title: str):
         var reportHtml = `{report_inner_js}`;
         var w = window.open('', '_blank', 'width=900,height=700');
         w.document.open();
-        w.document.write('<html><head><title>Rapport de caisse</title>');
+        w.document.write('<html><head><title>Rapport boîte 1000</title>');
         w.document.write('<style>');
-        w.document.write('body{{font-family:Arial,sans-serif;padding:18px;}}');
+        w.document.write('body{{font-family:Arial,sans-serif;padding:18px;background:#fff;color:#000;}}');
         w.document.write('table{{width:100%;border-collapse:collapse;}}');
         w.document.write('th,td{{border:1px solid #000;padding:6px;}}');
         w.document.write('th{{background:#f3f3f3;}}');
@@ -165,119 +237,198 @@ def build_report_html(rows, meta_title: str):
         w.focus();
         w.print();
       }}
-
       const btn = document.getElementById('print-btn');
-      if (btn) {{
-        btn.addEventListener('click', function() {{
-          printOnlyReport();
-        }});
-      }}
+      if (btn) btn.addEventListener('click', printOnlyReport);
     </script>
     """
     return html
 
-# ---------------- STATE ----------------
-if "show_report" not in st.session_state:
-    st.session_state.show_report = False
-if "report_payload" not in st.session_state:
-    st.session_state.report_payload = None
 
-# ---------------- UI ----------------
-st.title("Caisse 1000 $ — OPEN / IN / OUT / CLOSE")
-st.caption("OUT = quantités. Le bouton d’impression imprime uniquement le rapport.")
+# ------------------ ÉTAT ------------------
+if "locked_retrait_1000" not in st.session_state:
+    st.session_state.locked_retrait_1000 = {}
+
+if "show_report_1000" not in st.session_state:
+    st.session_state.show_report_1000 = False
+
+if "report_payload_1000" not in st.session_state:
+    st.session_state.report_payload_1000 = None
+
+
+# ------------------ UI ------------------
+st.title("Boîte 1000 $ — Calcul de change")
+st.caption("Objectif: après dépôt + retrait, la boîte doit revenir à **1000,00 $**.")
+
+st.info("⚠️ Si vous utilisez des **rouleaux**, évitez de compter en plus les **mêmes pièces en vrac** (sinon double comptage).")
 
 st.divider()
 
-# OPEN
-st.header("1) OPEN — Contenu initial")
+# 1) OPEN
+st.header("1) OPEN — Contenu actuel (avant dépôt)")
 open_counts = {}
 c1, c2 = st.columns(2)
 for i, k in enumerate(ORDER):
     with (c1 if i % 2 == 0 else c2):
         open_counts[k] = st.number_input(k, min_value=0, step=1, value=0, key=f"open_{k}")
 
-st.info("TOTAL OPEN : " + cents_to_str(total_cents(open_counts)))
+total_open = total_cents(open_counts)
+st.success("TOTAL OPEN : " + cents_to_str(total_open))
 
 st.divider()
 
-# IN
-st.header("2) IN — Dépôt (quantités)")
-in_counts = {}
+# 2) DÉPÔT
+st.header("2) DÉPÔT — Ce qui est ajouté dans la boîte")
+depot_counts = {}
 d1, d2 = st.columns(2)
 for i, k in enumerate(ORDER):
     with (d1 if i % 2 == 0 else d2):
-        in_counts[k] = st.number_input(f"{k} (IN)", min_value=0, step=1, value=0, key=f"in_{k}")
+        depot_counts[k] = st.number_input(f"{k} (DÉPÔT)", min_value=0, step=1, value=0, key=f"depot_{k}")
 
-after_in = add_counts(open_counts, in_counts)
-st.info("TOTAL IN : " + cents_to_str(total_cents(in_counts)))
-st.success("TOTAL APRÈS IN : " + cents_to_str(total_cents(after_in)))
+total_depot = total_cents(depot_counts)
+after_in = add_counts(open_counts, depot_counts)
+total_after = total_cents(after_in)
 
-st.divider()
-
-# OUT
-st.header("3) OUT — Retrait (quantités)")
-out_counts = {}
-w1, w2 = st.columns(2)
-for i, k in enumerate(ORDER):
-    with (w1 if i % 2 == 0 else w2):
-        out_counts[k] = st.number_input(f"{k} — quantité à retirer", min_value=0, step=1, value=0, key=f"out_{k}")
-
-out_counts = {k: int(out_counts.get(k, 0)) for k in DENOMS}
-st.info("TOTAL OUT : " + cents_to_str(total_cents(out_counts)))
-
-errors = []
-for k in ORDER:
-    if out_counts[k] > after_in[k]:
-        errors.append(f"{k}: pas assez en caisse. Dispo après dépôt = {after_in[k]}, retrait demandé = {out_counts[k]}.")
+st.info("TOTAL DÉPÔT : " + cents_to_str(total_depot))
+st.success("TOTAL APRÈS DÉPÔT : " + cents_to_str(total_after))
 
 st.divider()
 
-# CLOSE + REPORT
-st.header("4) CLOSE — Résultat final")
+# 3) RETRAIT recommandé + ajustable
+st.header("3) RETRAIT — Pour revenir à 1000 $")
+
+diff = total_after - TARGET  # montant à retirer
+st.write("Cible: **" + cents_to_str(TARGET) + "**")
+st.write("Écart (après dépôt - cible): **" + cents_to_str(diff) + "**")
+
+if diff < 0:
+    st.warning("La boîte est en dessous de 1000 $. Ici il faudrait AJOUTER de l’argent, pas retirer.")
+    retrait_counts = {k: 0 for k in DENOMS}
+    remaining_after = diff
+else:
+    st.subheader("Types autorisés (ce que tu veux donner en change)")
+    st.caption("Décoche les types que tu ne veux pas utiliser pour le retrait.")
+    allowed = []
+    a1, a2 = st.columns(2)
+    for i, k in enumerate(ORDER):
+        with (a1 if i % 2 == 0 else a2):
+            if st.checkbox(k, value=True, key=f"allow_{k}"):
+                allowed.append(k)
+
+    prefer_mode = st.radio(
+        "Priorité de suggestion",
+        ["Petites coupures / pièces", "Grosses coupures (moins d’items)"],
+        index=0
+    )
+    prefer_small = (prefer_mode == "Petites coupures / pièces")
+
+    cols = st.columns([1, 1, 2])
+    with cols[0]:
+        if st.button("SUGGÉRER RETRAIT"):
+            st.session_state.locked_retrait_1000 = {}
+    with cols[1]:
+        if st.button("RÉINITIALISER AJUSTEMENTS"):
+            st.session_state.locked_retrait_1000 = {}
+
+    # sécuriser le lock selon la dispo
+    st.session_state.locked_retrait_1000 = clamp_locked(st.session_state.locked_retrait_1000, after_in)
+
+    if not allowed:
+        st.error("Choisis au moins un type autorisé pour le retrait.")
+        retrait_counts = {k: 0 for k in DENOMS}
+        remaining_after = diff
+    else:
+        retrait_counts, remaining_after = fill_greedy(
+            target_withdraw_cents=diff,
+            allowed=allowed,
+            available=after_in,
+            locked=st.session_state.locked_retrait_1000,
+            prefer_small=prefer_small
+        )
+
+        if remaining_after == 0:
+            st.success("RETRAIT proposé : " + cents_to_str(total_cents(retrait_counts)))
+        else:
+            st.error("Impossible de faire un retrait EXACT avec les types autorisés + la disponibilité.")
+            st.write("Montant restant non couvert : **" + cents_to_str(remaining_after) + "**")
+
+        st.subheader("Ajuster le retrait")
+        st.caption("Clique ➖/➕ pour ajuster une dénomination, puis l’app recalcule le reste automatiquement.")
+
+        # UI d’ajustement (➕ visible, pas le caractère '+')
+        for k in ORDER:
+            if k not in allowed:
+                continue
+
+            q = int(retrait_counts.get(k, 0))
+            max_avail = int(after_in.get(k, 0))
+
+            row = st.columns([2.8, 1.1, 1.1, 1.4, 1.6])
+            row[0].write(k)
+
+            minus = row[1].button("➖", key=f"minus1000_{k}")
+            plus  = row[2].button("➕", key=f"plus1000_{k}")
+
+            row[3].write(f"RETRAIT: **{q}**")
+            row[4].write(f"Dispo: {max_avail}")
+
+            if minus or plus:
+                locked = dict(st.session_state.locked_retrait_1000)
+
+                # démarrer le lock sur la proposition actuelle
+                if k not in locked:
+                    locked[k] = q
+
+                if minus:
+                    locked[k] = int(locked[k]) - 1
+                if plus:
+                    locked[k] = int(locked[k]) + 1
+
+                if locked[k] < 0:
+                    locked[k] = 0
+                if locked[k] > max_avail:
+                    locked[k] = max_avail
+
+                st.session_state.locked_retrait_1000 = locked
+                st.rerun()
+
+# 4) FERMETURE (après retrait)
+st.divider()
+st.header("4) FERMETURE — Contenu final de la boîte")
+
+if diff < 0:
+    close_counts = after_in  # aucun retrait
+else:
+    close_counts = sub_counts(after_in, retrait_counts)
+
+total_close = total_cents(close_counts)
+st.success("TOTAL FERMETURE : " + cents_to_str(total_close))
+
+if total_close != TARGET:
+    st.warning("⚠️ La boîte n’est pas exactement à 1000,00 $. Ajuste le retrait / types autorisés.")
+else:
+    st.success("✅ La boîte est revenue exactement à 1000,00 $.")
+
+st.divider()
+
+# 5) Rapport imprimable
+st.header("5) Rapport imprimable")
+
 colA, colB = st.columns([1, 1])
-
 with colA:
-    generate = st.button("GÉNÉRER LE RAPPORT")
+    gen = st.button("GÉNÉRER LE RAPPORT")
 with colB:
     clear = st.button("EFFACER LE RAPPORT")
 
 if clear:
-    st.session_state.show_report = False
-    st.session_state.report_payload = None
+    st.session_state.show_report_1000 = False
+    st.session_state.report_payload_1000 = None
 
-if generate:
-    if errors:
-        st.session_state.show_report = False
-        st.session_state.report_payload = None
-        st.error("Erreurs détectées :")
-        for e in errors:
-            st.write("- " + e)
-    else:
-        close_counts = sub_counts(after_in, out_counts)
-        total_close = total_cents(close_counts)
+if gen:
+    rows = rows_report(open_counts, depot_counts, retrait_counts if diff >= 0 else {k: 0 for k in DENOMS}, close_counts)
+    meta = "Généré le " + datetime.now().strftime("%Y-%m-%d %H:%M")
+    st.session_state.report_payload_1000 = {"rows": rows, "meta": meta}
+    st.session_state.show_report_1000 = True
 
-        rows = rapport_rows(open_counts, in_counts, out_counts, close_counts)
-        meta = "Généré le " + datetime.now().strftime("%Y-%m-%d %H:%M")
-
-        st.session_state.report_payload = {
-            "rows": rows,
-            "meta": meta,
-            "total_close": total_close
-        }
-        st.session_state.show_report = True
-
-if st.session_state.show_report and st.session_state.report_payload:
-    total_close = st.session_state.report_payload["total_close"]
-    st.success("TOTAL CLOSE : " + cents_to_str(total_close))
-
-    if total_close != TARGET:
-        st.warning("⚠️ Le total final n’est pas 1 000,00 $.")
-    else:
-        st.success("✅ Total final = 1 000,00 $")
-
-    st.subheader("Rapport (impression du tableau seulement)")
-    html = build_report_html(
-        st.session_state.report_payload["rows"],
-        st.session_state.report_payload["meta"]
-    )
+if st.session_state.show_report_1000 and st.session_state.report_payload_1000:
+    html = build_print_html(st.session_state.report_payload_1000["rows"], st.session_state.report_payload_1000["meta"])
     components.html(html, height=560, scrolling=True)
