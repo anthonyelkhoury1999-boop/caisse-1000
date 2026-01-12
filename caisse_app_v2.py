@@ -18,7 +18,15 @@ if not st.session_state.auth:
     st.stop()
 # --- Fin protection ---
 
-st.set_page_config(page_title="Caisse 1000 $ — Boîte de change", layout="centered")
+# caisse_app_v2.py
+# Boîte 1000$ — calcul de change + suggestion de retrait ajustable + rapport imprimable
+# (Version "tolérante" : ne bloque pas si le retrait exact est impossible)
+
+import streamlit as st
+import streamlit.components.v1 as components
+from datetime import datetime
+
+st.set_page_config(page_title="Boîte 1000 $ — Calcul de change", layout="centered")
 
 # ------------------ PARAMÈTRES ------------------
 TARGET = 100000  # 1000.00$ en cents
@@ -69,34 +77,45 @@ ORDER = [
 
 # ------------------ OUTILS ------------------
 def cents_to_str(c: int) -> str:
-    return f"{c/100:.2f} $"
+    return f"{c / 100:.2f} $"
+
 
 def total_cents(counts: dict) -> int:
     return sum(int(counts.get(k, 0)) * DENOMS[k] for k in DENOMS)
 
+
 def add_counts(a: dict, b: dict) -> dict:
     return {k: int(a.get(k, 0)) + int(b.get(k, 0)) for k in DENOMS}
+
 
 def sub_counts(a: dict, b: dict) -> dict:
     return {k: int(a.get(k, 0)) - int(b.get(k, 0)) for k in DENOMS}
 
+
 def clamp_locked(locked: dict, max_available: dict) -> dict:
     out = dict(locked)
     for k in list(out.keys()):
-        out[k] = int(out[k])
-        if out[k] < 0:
-            out[k] = 0
-        if out[k] > int(max_available.get(k, 0)):
-            out[k] = int(max_available.get(k, 0))
+        q = int(out[k])
+        if q < 0:
+            q = 0
+        max_q = int(max_available.get(k, 0))
+        if q > max_q:
+            q = max_q
+        out[k] = q
     return out
 
-def fill_greedy(target_withdraw_cents: int, allowed: list, available: dict, locked: dict, prefer_small: bool):
+
+def fill_greedy(
+    target_withdraw_cents: int,
+    allowed: list,
+    available: dict,
+    locked: dict,
+    prefer_small: bool,
+):
     """
-    Calcule un retrait EXACT (si possible).
-    - locked: quantités verrouillées par l'utilisateur
-    - prefer_small=True: propose d'abord les petites valeurs (souvent mieux pour "faire du change")
-      prefer_small=False: propose d'abord les grosses valeurs (moins de pièces/billets)
-    Retour: (out_counts, remaining_cents_after)
+    Retourne (retrait_counts, remaining)
+    - retrait_counts : dict denom->qty
+    - remaining : cents restants non couverts (peut être >0, on ne bloque pas)
     """
     out = {k: 0 for k in DENOMS}
 
@@ -104,11 +123,14 @@ def fill_greedy(target_withdraw_cents: int, allowed: list, available: dict, lock
     for k, q in locked.items():
         out[k] = int(q)
 
-    remaining = target_withdraw_cents - sum(out[k] * DENOMS[k] for k in DENOMS)
+    locked_value = sum(out[k] * DENOMS[k] for k in DENOMS)
+    remaining = target_withdraw_cents - locked_value
     if remaining < 0:
-        return out, remaining  # retrait trop grand
+        # L'utilisateur a verrouillé trop de retrait (dépassé)
+        return out, remaining
 
-    allowed_sorted = sorted(allowed, key=lambda x: DENOMS[x])  # SMALL → BIG
+    # tri : petites->grosses si prefer_small, sinon grosses->petites
+    allowed_sorted = sorted(allowed, key=lambda x: DENOMS[x], reverse=not prefer_small)
 
     for k in allowed_sorted:
         if k in locked:
@@ -117,17 +139,18 @@ def fill_greedy(target_withdraw_cents: int, allowed: list, available: dict, lock
         max_can_take = int(available.get(k, 0)) - int(out.get(k, 0))
         if max_can_take < 0:
             max_can_take = 0
+
         take = min(remaining // v, max_can_take)
         out[k] += int(take)
         remaining -= int(take) * v
 
+        if remaining == 0:
+            break
+
     return out, remaining
 
+
 def rows_report(open_c, depot_c, retrait_c, close_c):
-    """
-    Tableau: Dénomination | OPEN | DÉPÔT | RETRAIT | FERMETURE
-    + ligne TOTAL($)
-    """
     rows = []
     t_o = t_d = t_r = t_c = 0
 
@@ -137,27 +160,32 @@ def rows_report(open_c, depot_c, retrait_c, close_c):
         r = int(retrait_c.get(k, 0))
         c = int(close_c.get(k, 0))
 
-        rows.append({
-            "Dénomination": k,
-            "OPEN": o,
-            "DÉPÔT": d,
-            "RETRAIT": r,
-            "FERMETURE": c,
-        })
+        rows.append(
+            {
+                "Dénomination": k,
+                "OPEN": o,
+                "IN": d,
+                "OUT": r,
+                "CLOSE": c,
+            }
+        )
 
         t_o += o * DENOMS[k]
         t_d += d * DENOMS[k]
         t_r += r * DENOMS[k]
         t_c += c * DENOMS[k]
 
-    rows.append({
-        "Dénomination": "TOTAL ($)",
-        "OPEN": f"{t_o/100:.2f}",
-        "DÉPÔT": f"{t_d/100:.2f}",
-        "RETRAIT": f"{t_r/100:.2f}",
-        "FERMETURE": f"{t_c/100:.2f}",
-    })
+    rows.append(
+        {
+            "Dénomination": "TOTAL ($)",
+            "OPEN": f"{t_o / 100:.2f}",
+            "IN": f"{t_d / 100:.2f}",
+            "OUT": f"{t_r / 100:.2f}",
+            "CLOSE": f"{t_c / 100:.2f}",
+        }
+    )
     return rows
+
 
 def build_print_html(rows, meta_line: str):
     body = ""
@@ -166,13 +194,13 @@ def build_print_html(rows, meta_line: str):
             "<tr>"
             f"<td>{r['Dénomination']}</td>"
             f"<td>{r['OPEN']}</td>"
-            f"<td>{r['DÉPÔT']}</td>"
-            f"<td>{r['RETRAIT']}</td>"
-            f"<td>{r['FERMETURE']}</td>"
+            f"<td>{r['IN']}</td>"
+            f"<td>{r['OUT']}</td>"
+            f"<td>{r['CLOSE']}</td>"
             "</tr>"
         )
 
-    # Force fond blanc + texte noir pour être lisible en dark mode
+    # Force fond blanc + texte noir (lisible en dark mode)
     report_inner = f"""
       <div>
         <h2 style="margin:0;">Rapport — Boîte 1000 $</h2>
@@ -185,9 +213,9 @@ def build_print_html(rows, meta_line: str):
           <tr style="background:#f3f3f3; color:#000;">
             <th>Dénomination</th>
             <th>OPEN</th>
-            <th>DÉPÔT</th>
-            <th>RETRAIT</th>
-            <th>FERMETURE</th>
+            <th>IN</th>
+            <th>OUT</th>
+            <th>CLOSE</th>
           </tr>
         </thead>
         <tbody>
@@ -257,9 +285,9 @@ if "report_payload_1000" not in st.session_state:
 
 # ------------------ UI ------------------
 st.title("Boîte 1000 $ — Calcul de change")
-st.caption("Objectif: après dépôt + retrait, la boîte doit revenir à **1000,00 $**.")
+st.caption("Après dépôt + retrait, la boîte doit revenir à **1000,00 $** (objectif de base).")
 
-st.info("⚠️ Si vous utilisez des **rouleaux**, évitez de compter en plus les **mêmes pièces en vrac** (sinon double comptage).")
+st.info("⚠️ Si vous utilisez des **rouleaux**, évitez de compter en plus les mêmes pièces en vrac (double comptage).")
 
 st.divider()
 
@@ -276,34 +304,35 @@ st.success("TOTAL OPEN : " + cents_to_str(total_open))
 
 st.divider()
 
-# 2) DÉPÔT
-st.header("2) DÉPÔT — Ce qui est ajouté dans la boîte")
+# 2) IN (DÉPÔT)
+st.header("2) IN — Dépôt (ce qui est ajouté dans la boîte)")
 depot_counts = {}
 d1, d2 = st.columns(2)
 for i, k in enumerate(ORDER):
     with (d1 if i % 2 == 0 else d2):
-        depot_counts[k] = st.number_input(f"{k} (DÉPÔT)", min_value=0, step=1, value=0, key=f"depot_{k}")
+        depot_counts[k] = st.number_input(f"{k} (IN)", min_value=0, step=1, value=0, key=f"in_{k}")
 
-total_depot = total_cents(depot_counts)
+total_in = total_cents(depot_counts)
 after_in = add_counts(open_counts, depot_counts)
 total_after = total_cents(after_in)
 
-st.info("TOTAL DÉPÔT : " + cents_to_str(total_depot))
-st.success("TOTAL APRÈS DÉPÔT : " + cents_to_str(total_after))
+st.info("TOTAL IN : " + cents_to_str(total_in))
+st.success("TOTAL APRÈS IN : " + cents_to_str(total_after))
 
 st.divider()
 
-# 3) RETRAIT recommandé + ajustable
-st.header("3) RETRAIT — Pour revenir à 1000 $")
+# 3) OUT (RETRAIT)
+st.header("3) OUT — Retrait (pour revenir vers 1000 $)")
+diff = total_after - TARGET  # montant à retirer pour revenir à 1000
 
-diff = total_after - TARGET  # montant à retirer
 st.write("Cible: **" + cents_to_str(TARGET) + "**")
-st.write("Écart (après dépôt - cible): **" + cents_to_str(diff) + "**")
+st.write("Écart (après IN - cible) : **" + cents_to_str(diff) + "**")
+
+retrait_counts = {k: 0 for k in DENOMS}
+remaining = 0
 
 if diff < 0:
     st.warning("La boîte est en dessous de 1000 $. Ici il faudrait AJOUTER de l’argent, pas retirer.")
-    retrait_counts = {k: 0 for k in DENOMS}
-    remaining_after = diff
 else:
     st.subheader("Types autorisés (ce que tu veux donner en change)")
     st.caption("Décoche les types que tu ne veux pas utiliser pour le retrait.")
@@ -317,49 +346,48 @@ else:
     prefer_mode = st.radio(
         "Priorité de suggestion",
         ["Petites coupures / pièces", "Grosses coupures (moins d’items)"],
-        index=0
+        index=0,
     )
     prefer_small = (prefer_mode == "Petites coupures / pièces")
 
-    cols = st.columns([1, 1, 2])
-    with cols[0]:
+    btns = st.columns([1, 1, 3])
+    with btns[0]:
         if st.button("SUGGÉRER RETRAIT"):
             st.session_state.locked_retrait_1000 = {}
-    with cols[1]:
+    with btns[1]:
         if st.button("RÉINITIALISER AJUSTEMENTS"):
             st.session_state.locked_retrait_1000 = {}
 
-    # sécuriser le lock selon la dispo
     st.session_state.locked_retrait_1000 = clamp_locked(st.session_state.locked_retrait_1000, after_in)
 
     if not allowed:
-        st.error("Choisis au moins un type autorisé pour le retrait.")
+        st.warning("Choisis au moins un type autorisé pour le retrait.")
         retrait_counts = {k: 0 for k in DENOMS}
-        remaining_after = diff
+        remaining = diff
     else:
-        retrait_counts, remaining_after = fill_greedy(
+        retrait_counts, remaining = fill_greedy(
             target_withdraw_cents=diff,
             allowed=allowed,
             available=after_in,
             locked=st.session_state.locked_retrait_1000,
-            prefer_small=prefer_small
+            prefer_small=prefer_small,
         )
-        
-       if remaining > 0:
-               st.warning(f"Impossible de couvrir le reste ({cents_to_str(remaining)}) "
-        "avec le contenu actuel de la caisse.")
-           
-        if remaining_after == 0:
-            st.success("RETRAIT proposé : " + cents_to_str(total_cents(retrait_counts)))
+
+        # Ici: on ne bloque PAS (boîte de change)
+        # On affiche seulement un avertissement si on ne peut pas couvrir exactement
+        if remaining > 0:
+            st.warning(
+                f"Impossible de couvrir le reste ({cents_to_str(remaining)}) "
+                "avec le contenu actuel de la caisse."
+            )
+        elif remaining < 0:
+            st.warning("Tu as verrouillé trop de retrait (dépassement). Diminue une dénomination.")
         else:
-          # For the 1000$ box, we NEVER block
-          # Remaining will be handled by smaller denominations
-         st.write("Montant restant non couvert : **" + cents_to_str(remaining_after) + "**")
+            st.success("Retrait proposé : " + cents_to_str(total_cents(retrait_counts)))
 
         st.subheader("Ajuster le retrait")
         st.caption("Clique ➖/➕ pour ajuster une dénomination, puis l’app recalcule le reste automatiquement.")
 
-        # UI d’ajustement (➕ visible, pas le caractère '+')
         for k in ORDER:
             if k not in allowed:
                 continue
@@ -371,9 +399,9 @@ else:
             row[0].write(k)
 
             minus = row[1].button("➖", key=f"minus1000_{k}")
-            plus  = row[2].button("➕", key=f"plus1000_{k}")
+            plus = row[2].button("➕", key=f"plus1000_{k}")
 
-            row[3].write(f"RETRAIT: **{q}**")
+            row[3].write(f"OUT: **{q}**")
             row[4].write(f"Dispo: {max_avail}")
 
             if minus or plus:
@@ -396,9 +424,9 @@ else:
                 st.session_state.locked_retrait_1000 = locked
                 st.rerun()
 
-# 4) FERMETURE (après retrait)
+# 4) CLOSE
 st.divider()
-st.header("4) FERMETURE — Contenu final de la boîte")
+st.header("4) CLOSE — Contenu final de la boîte")
 
 if diff < 0:
     close_counts = after_in  # aucun retrait
@@ -406,17 +434,17 @@ else:
     close_counts = sub_counts(after_in, retrait_counts)
 
 total_close = total_cents(close_counts)
-st.success("TOTAL FERMETURE : " + cents_to_str(total_close))
+st.success("TOTAL CLOSE : " + cents_to_str(total_close))
 
-if total_close != TARGET:
-    st.warning("⚠️ La boîte n’est pas exactement à 1000,00 $. Ajuste le retrait / types autorisés.")
-else:
+if total_close == TARGET:
     st.success("✅ La boîte est revenue exactement à 1000,00 $.")
+else:
+    st.info("ℹ️ La boîte n’est pas exactement à 1000,00 $. (Boîte de change: tolérance possible selon vos règles.)")
 
 st.divider()
 
 # 5) Rapport imprimable
-st.header("5) Rapport imprimable")
+st.header("5) Rapport imprimable (tableau seulement)")
 
 colA, colB = st.columns([1, 1])
 with colA:
@@ -429,11 +457,19 @@ if clear:
     st.session_state.report_payload_1000 = None
 
 if gen:
-    rows = rows_report(open_counts, depot_counts, retrait_counts if diff >= 0 else {k: 0 for k in DENOMS}, close_counts)
+    rows = rows_report(
+        open_counts,
+        depot_counts,
+        retrait_counts if diff >= 0 else {k: 0 for k in DENOMS},
+        close_counts,
+    )
     meta = "Généré le " + datetime.now().strftime("%Y-%m-%d %H:%M")
     st.session_state.report_payload_1000 = {"rows": rows, "meta": meta}
     st.session_state.show_report_1000 = True
 
 if st.session_state.show_report_1000 and st.session_state.report_payload_1000:
-    html = build_print_html(st.session_state.report_payload_1000["rows"], st.session_state.report_payload_1000["meta"])
+    html = build_print_html(
+        st.session_state.report_payload_1000["rows"],
+        st.session_state.report_payload_1000["meta"],
+    )
     components.html(html, height=560, scrolling=True)
