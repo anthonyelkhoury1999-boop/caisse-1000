@@ -18,14 +18,28 @@ if not st.session_state.auth:
     st.stop()
 # --- Fin protection ---
 
-# caisse_app_v2_fixed.py
-# Boîte 1000$ — calcul de change + suggestion de retrait "mix" + ajustement manuel (saisie) + rapport imprimable
+# caisse_app_v3.py
+# Boîte 1000$ — calcul de change + suggestion de retrait "mix" + ajustement manuel (saisie + boutons +/-) + rapport imprimable
+#
+# Objectif:
+# 1) OPEN: contenu actuel (quantités)
+# 2) IN: dépôt (quantités)
+# 3) OUT: l'app suggère quoi retirer pour revenir à 1000$ (mix billets + pièces)
+#    - Ajustement: tu peux ÉCRIRE la quantité OUT par dénomination + boutons ATM +/- (pas juste le spinner)
+#    - Dès que tu modifies une ligne, elle devient "verrouillée" et le reste se recalcule automatiquement
+#    - Tu peux déverrouiller tout, ou seulement les pièces
+# 4) CLOSE: contenu final
+# 5) Rapport imprimable OPEN / IN / OUT / CLOSE (bouton qui imprime le tableau seulement)
+#
+# Notes:
+# - La boîte 1000$ sert à faire du change => on NE BLOQUE PAS si l'exact est impossible.
+#   On affiche au pire un WARNING, mais on continue.
 
 import streamlit as st
 import streamlit.components.v1 as components
 from datetime import datetime
-import hashlib
 import json
+import hashlib
 
 st.set_page_config(page_title="Boîte 1000 $ — Calcul de change", layout="centered")
 
@@ -85,7 +99,6 @@ ROLL_KEYS = [
     "Rouleau 0,05 $ (40) — 2 $",
 ]
 
-
 # ------------------ OUTILS ------------------
 def cents_to_str(c: int) -> str:
     return f"{c / 100:.2f} $"
@@ -116,14 +129,6 @@ def clamp_to_avail(counts: dict, avail: dict) -> dict:
     return out
 
 
-def build_allowed_from_checks(prefix: str) -> list:
-    allowed = []
-    for k in ORDER:
-        if st.session_state.get(f"{prefix}{k}", True):
-            allowed.append(k)
-    return allowed
-
-
 def sum_counts(a: dict, b: dict) -> dict:
     return {k: int(a.get(k, 0)) + int(b.get(k, 0)) for k in DENOMS}
 
@@ -132,9 +137,17 @@ def count_total_coins(counts: dict) -> int:
     return sum(int(counts.get(k, 0)) for k in COIN_KEYS)
 
 
+def build_allowed_from_checks(prefix: str) -> list:
+    allowed = []
+    for k in ORDER:
+        if st.session_state.get(f"{prefix}{k}", True):
+            allowed.append(k)
+    return allowed
+
+
 def greedy_fill(amount_cents: int, denom_list_desc: list, avail: dict, already: dict) -> tuple[dict, int]:
     """
-    Greedy: utilise denom_list_desc (déjà triée du +grand au +petit) pour couvrir amount_cents.
+    Greedy: utilise denom_list_desc (triée du +grand au +petit) pour couvrir amount_cents.
     Respecte les disponibilités (avail) ET ce qui est déjà pris (already).
     Retourne (added_counts, remaining_cents)
     """
@@ -166,7 +179,7 @@ def suggest_with_mix(
     want_bills_10_5: bool,
 ) -> tuple[dict, int]:
     """
-    Suggestion "mix" qui RESPECTE déjà (already) partout.
+    Suggestion "mix" qui respecte already partout.
     """
     if withdraw_cents <= 0:
         return {k: 0 for k in DENOMS}, 0
@@ -175,15 +188,13 @@ def suggest_with_mix(
     out = {k: 0 for k in DENOMS}
     remaining = int(withdraw_cents)
 
-    # Pools autorisés
     bills_allowed = [k for k in BILL_KEYS if k in allowed_set]
     rolls_allowed = [k for k in ROLL_KEYS if k in allowed_set]
     coins_allowed = [k for k in COIN_KEYS if k in allowed_set]
 
     bills_desc = sorted(bills_allowed, key=lambda x: DENOMS[x], reverse=True)
     rolls_desc = sorted(rolls_allowed, key=lambda x: DENOMS[x], reverse=True)
-    coins_desc = sorted(coins_allowed, key=lambda x: DENOMS[x], reverse=True)  # 2$ -> 0.05
-    coins_asc = sorted(coins_allowed, key=lambda x: DENOMS[x])                # 0.05 -> 2$
+    coins_asc = sorted(coins_allowed, key=lambda x: DENOMS[x])  # 0.05 -> 2$
 
     if not prefer_small:
         all_desc = sorted(allowed, key=lambda x: DENOMS[x], reverse=True)
@@ -192,9 +203,7 @@ def suggest_with_mix(
         remaining = rem1
         return out, remaining
 
-    # --- prefer_small = True (mix) ---
-
-    # (1) Option: injecter quelques billets 10/5, sans dépasser la dispo (en tenant compte de already)
+    # (1) Option: injecter quelques billets 10/5 d'abord
     if want_bills_10_5:
         for bk, desired in [("Billet 10 $", 2), ("Billet 5 $", 2)]:
             if bk in allowed_set and remaining >= DENOMS[bk]:
@@ -213,7 +222,7 @@ def suggest_with_mix(
         out = sum_counts(out, add2)
         remaining = rem2
 
-    # (3) Finir avec pièces, limité coin_cap, en tenant compte de already
+    # (3) Finir avec pièces, limité par coin_cap
     if coins_allowed and remaining > 0:
         for ck in coins_asc:
             if remaining <= 0:
@@ -232,7 +241,7 @@ def suggest_with_mix(
                 out[ck] += int(take)
                 remaining -= int(take) * v
 
-    # (4) Fallback: tenter le reste avec tout (gros->petit) en respectant already
+    # (4) Fallback: tenter le reste avec tout (gros->petit)
     if remaining > 0:
         all_desc = sorted(allowed, key=lambda x: DENOMS[x], reverse=True)
         add4, rem4 = greedy_fill(remaining, all_desc, avail, already=sum_counts(already, out))
@@ -362,7 +371,7 @@ def build_print_html(rows, meta_line: str):
 
 # ------------------ ÉTAT ------------------
 if "locked_set_1000" not in st.session_state:
-    st.session_state.locked_set_1000 = set()  # quelles dénominations sont "verrouillées"
+    st.session_state.locked_set_1000 = set()  # denoms verrouillés
 
 if "show_report_1000" not in st.session_state:
     st.session_state.show_report_1000 = False
@@ -375,60 +384,228 @@ if "last_out_inputs_hash_1000" not in st.session_state:
 
 
 # ------------------ UI ------------------
-# --- inside: for k in ORDER: ... ---
+st.title("Boîte 1000 $ — Calcul de change")
+st.caption("Après dépôt + retrait, la boîte vise **1000,00 $** (base).")
+st.info("⚠️ Si tu utilises des **rouleaux**, évite de compter les mêmes pièces en vrac (double comptage).")
+st.divider()
 
-max_avail = int(after_in.get(k, 0))
-widget_key = f"out_{k}"
+# 1) OPEN
+st.header("1) OPEN — Contenu actuel (avant dépôt)")
+open_counts = {}
+c1, c2 = st.columns(2)
+for i, k in enumerate(ORDER):
+    with (c1 if i % 2 == 0 else c2):
+        open_counts[k] = st.number_input(k, min_value=0, step=1, value=0, key=f"open_{k}")
 
-# ensure key exists
-if widget_key not in st.session_state:
-    st.session_state[widget_key] = 0
+total_open = total_cents(open_counts)
+st.success("TOTAL OPEN : " + cents_to_str(total_open))
+st.divider()
 
-def lock_this(denom: str):
-    st.session_state.locked_set_1000 = set(st.session_state.locked_set_1000)
-    st.session_state.locked_set_1000.add(denom)
+# 2) IN
+st.header("2) IN — Dépôt (ce qui est ajouté)")
+depot_counts = {}
+d1, d2 = st.columns(2)
+for i, k in enumerate(ORDER):
+    with (d1 if i % 2 == 0 else d2):
+        depot_counts[k] = st.number_input(f"{k} (IN)", min_value=0, step=1, value=0, key=f"in_{k}")
 
-def bump(denom: str, delta: int):
-    key = f"out_{denom}"
-    cur = int(st.session_state.get(key, 0))
-    nxt = cur + delta
-    if nxt < 0:
-        nxt = 0
-    if nxt > int(after_in.get(denom, 0)):
-        nxt = int(after_in.get(denom, 0))
-    st.session_state[key] = nxt
-    lock_this(denom)
-    st.rerun()
+total_in = total_cents(depot_counts)
+after_in = add_counts(open_counts, depot_counts)
+total_after = total_cents(after_in)
 
-cols = st.columns([3.0, 0.7, 1.3, 0.7, 1.0, 1.6])
-cols[0].write(k)
+st.info("TOTAL IN : " + cents_to_str(total_in))
+st.success("TOTAL APRÈS IN : " + cents_to_str(total_after))
+st.divider()
 
-# ATM-style minus
-cols[1].button("−", key=f"minus_{k}", on_click=bump, args=(k, -1), use_container_width=True)
+# 3) OUT
+st.header("3) OUT — Retrait (pour revenir à 1000 $)")
+diff = total_after - TARGET  # à retirer
 
-# input (still typeable)
-cols[2].number_input(
-    "OUT",
-    min_value=0,
-    max_value=max_avail,
-    value=int(st.session_state.get(widget_key, 0)),
-    step=1,
-    key=widget_key,
-    label_visibility="collapsed",
-    on_change=lock_this,
-    args=(k,),
-)
+st.write(f"Cible: **{cents_to_str(TARGET)}**")
+st.write(f"Écart (après IN - cible) : **{cents_to_str(diff)}**")
 
-# ATM-style plus
-cols[3].button("+", key=f"plus_{k}", on_click=bump, args=(k, +1), use_container_width=True)
+if diff < 0:
+    st.warning("La boîte est sous 1000 $. Ici il faudrait **AJOUTER** de l’argent, pas retirer.")
+    retrait_counts = {k: 0 for k in DENOMS}
+    remaining = diff
+else:
+    st.subheader("Types autorisés (ce que tu veux donner en change)")
+    st.caption("Décoche ce que tu ne veux PAS utiliser dans le retrait.")
 
-is_locked = (k in st.session_state.locked_set_1000)
-cols[4].write("🔒" if is_locked else "↻ auto")
-cols[5].write(f"Dispo: {max_avail}")
+    a1, a2 = st.columns(2)
+    for i, k in enumerate(ORDER):
+        with (a1 if i % 2 == 0 else a2):
+            st.checkbox(k, value=True, key=f"allow_{k}")
+
+    allowed = build_allowed_from_checks("allow_")
+
+    prefer_mode = st.radio(
+        "Priorité de suggestion",
+        ["Petites coupures / pièces (mix équilibré)", "Grosses coupures (moins d’items)"],
+        index=0,
+    )
+    prefer_small = (prefer_mode == "Petites coupures / pièces (mix équilibré)")
+
+    st.subheader("Réglages de distribution (pour éviter de vider les pièces)")
+    coin_cap = st.slider("Max total de pièces en OUT (limite)", 0, 600, 140, 10)
+    want_bills_10_5 = st.checkbox("Inclure automatiquement des billets 10$ et 5$", value=True)
+
+    bcol1, bcol2, bcol3 = st.columns([1.3, 1.3, 1.4])
+    with bcol1:
+        if st.button("RÉINITIALISER (déverrouiller tout)"):
+            st.session_state.locked_set_1000 = set()
+            for k in ORDER:
+                key = f"out_{k}"
+                if key in st.session_state:
+                    del st.session_state[key]
+            st.rerun()
+    with bcol2:
+        if st.button("DÉVERROUILLER SEULEMENT LES PIÈCES"):
+            st.session_state.locked_set_1000 = {k for k in st.session_state.locked_set_1000 if k not in COIN_KEYS}
+            for k in COIN_KEYS:
+                key = f"out_{k}"
+                if key in st.session_state:
+                    del st.session_state[key]
+            st.rerun()
+    with bcol3:
+        if st.button("VIDER OUT (tout à 0)"):
+            # met tout à 0 et verrouille tout (comme “ATM remove all”)
+            st.session_state.locked_set_1000 = set(allowed)
+            for k in allowed:
+                st.session_state[f"out_{k}"] = 0
+            st.rerun()
+
+    if not allowed:
+        st.warning("Choisis au moins un type autorisé pour le retrait.")
+        retrait_counts = {k: 0 for k in DENOMS}
+        remaining = diff
+    else:
+        # Hash des paramètres pour rafraîchir les non-verrouillés
+        refresh_payload = {
+            "diff": diff,
+            "allowed": allowed,
+            "prefer_small": prefer_small,
+            "coin_cap": coin_cap,
+            "want_bills_10_5": want_bills_10_5,
+            "avail": after_in,
+        }
+        cur_hash = hash_inputs(refresh_payload)
+        hash_changed = (st.session_state.last_out_inputs_hash_1000 != cur_hash)
+
+        def lock_this(denom: str):
+            st.session_state.locked_set_1000 = set(st.session_state.locked_set_1000)
+            st.session_state.locked_set_1000.add(denom)
+
+        def bump(denom: str, delta: int):
+            key = f"out_{denom}"
+            cur = int(st.session_state.get(key, 0))
+            nxt = cur + delta
+            if nxt < 0:
+                nxt = 0
+            max_av = int(after_in.get(denom, 0))
+            if nxt > max_av:
+                nxt = max_av
+            st.session_state[key] = nxt
+            lock_this(denom)
+            st.rerun()
+
+        # Suggestion de base (sans locked)
+        base_sugg, _ = suggest_with_mix(
+            withdraw_cents=diff,
+            allowed=allowed,
+            avail=after_in,
+            already={k: 0 for k in DENOMS},
+            prefer_small=prefer_small,
+            coin_cap=coin_cap,
+            want_bills_10_5=want_bills_10_5,
+        )
+
+        # Init / refresh des OUT widgets (seulement non verrouillés)
+        for k in allowed:
+            wkey = f"out_{k}"
+            if (wkey not in st.session_state) or (hash_changed and (k not in st.session_state.locked_set_1000)):
+                st.session_state[wkey] = int(base_sugg.get(k, 0))
+
+        # Locked dict = valeurs seulement des verrouillés
+        locked_dict = {k: 0 for k in DENOMS}
+        for k in st.session_state.locked_set_1000:
+            locked_dict[k] = int(st.session_state.get(f"out_{k}", 0))
+        locked_dict = clamp_to_avail(locked_dict, after_in)
+
+        locked_value = total_cents(locked_dict)
+        remaining_needed = diff - locked_value
+
+        # Suggestion du reste en respectant locked
+        rest_sugg = {k: 0 for k in DENOMS}
+        if remaining_needed > 0:
+            rest_sugg, _rem = suggest_with_mix(
+                withdraw_cents=remaining_needed,
+                allowed=allowed,
+                avail=after_in,
+                already=locked_dict,
+                prefer_small=prefer_small,
+                coin_cap=max(0, coin_cap - count_total_coins(locked_dict)),
+                want_bills_10_5=want_bills_10_5,
+            )
+        # Combine
+        retrait_counts = clamp_to_avail(sum_counts(locked_dict, rest_sugg), after_in)
+        out_total = total_cents(retrait_counts)
+        remaining = diff - out_total
+
+        st.write(f"TOTAL OUT : **{cents_to_str(out_total)}**")
+
+        if remaining > 0:
+            st.warning(
+                f"Reste non couvert: **{cents_to_str(remaining)}**. "
+                "Impossible d’atteindre exact avec la dispo/types/limites actuels (on ne bloque pas)."
+            )
+        elif remaining < 0:
+            st.warning(f"Tu as dépassé la cible de retrait de **{cents_to_str(-remaining)}** (trop retiré).")
+        else:
+            st.success("✅ Retrait exact atteint.")
+
+        st.subheader("Ajuster le retrait (saisie + boutons +/-)")
+        st.caption("Tape une valeur OU utilise les boutons. Toute ligne modifiée devient 🔒, le reste se recalcule.")
+
+        # UI par ligne
+        for k in ORDER:
+            if k not in allowed:
+                continue
+
+            max_avail = int(after_in.get(k, 0))
+            wkey = f"out_{k}"
+            if wkey not in st.session_state:
+                st.session_state[wkey] = 0
+
+            cols = st.columns([3.0, 0.7, 1.4, 0.7, 1.0, 1.6])
+            cols[0].write(k)
+
+            cols[1].button("−", key=f"minus_{k}", on_click=bump, args=(k, -1), use_container_width=True)
+
+            cols[2].number_input(
+                "OUT",
+                min_value=0,
+                max_value=max_avail,
+                value=int(st.session_state.get(wkey, 0)),
+                step=1,
+                key=wkey,
+                label_visibility="collapsed",
+                on_change=lock_this,
+                args=(k,),
+            )
+
+            cols[3].button("+", key=f"plus_{k}", on_click=bump, args=(k, +1), use_container_width=True)
+
+            is_locked = (k in st.session_state.locked_set_1000)
+            cols[4].write("🔒" if is_locked else "↻ auto")
+            cols[5].write(f"Dispo: {max_avail}")
+
+        st.session_state.last_out_inputs_hash_1000 = cur_hash
+
+st.divider()
 
 # 4) CLOSE
 st.header("4) CLOSE — Contenu final")
-
 if diff < 0:
     close_counts = after_in
 else:
@@ -440,7 +617,7 @@ st.success("TOTAL CLOSE : " + cents_to_str(total_close))
 if total_close == TARGET:
     st.success("✅ La boîte est revenue exactement à 1000,00 $.")
 else:
-    st.info("ℹ️ La boîte n’est pas exactement à 1000,00 $ (tolérance possible selon règles internes).")
+    st.info("ℹ️ La boîte n’est pas exactement à 1000,00 $ (tolérance possible).")
 
 st.divider()
 
